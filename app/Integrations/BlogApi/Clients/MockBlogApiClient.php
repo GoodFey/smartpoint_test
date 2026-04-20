@@ -331,41 +331,5 @@ class MockBlogApiClient implements BlogApiClientInterface
             $posts
         );
     }
-
-    public function getAllBlogs(): array
-    {
-        $result = [];
-
-        foreach ($this->blogs as $externalId => $data) {
-            $result[$externalId] = new BlogDto(
-                title: $data['title'],
-                author: $data['author'],
-                catName: $data['cat_name'],
-                rating: $data['rating'],
-            );
-        }
-
-        return $result;
-    }
-
-    public function getAllPosts(): array
-    {
-        $result = [];
-
-        foreach ($this->posts as $externalId => $posts) {
-            $result[$externalId] = array_map(
-                fn (array $post) => new PostDto(
-                    externalId: $post['external_id'],
-                    title: $post['title'],
-                    content: $post['content'],
-                    rating: $post['rating'],
-                    reactions: $post['reactions'],
-                ),
-                $posts
-            );
-        }
-
-        return $result;
-    }
 }
 

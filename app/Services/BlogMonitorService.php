@@ -1,0 +1,42 @@
+<?php
+
+namespace App\Services;
+
+use App\Integrations\BlogApi\Contracts\BlogApiClientInterface;
+use App\Integrations\BlogApi\Factories\BlogApiClientFactory;
+use App\Models\Blog;
+use App\Models\Notification;
+use InvalidArgumentException;
+
+class BlogMonitorService
+{
+    public function __construct(
+        private BlogApiClientFactory $apiClientFactory,
+        private BlogSyncService $syncService,
+    ) {
+    }
+
+    /**
+     * Monitor blog: fetch data from API and sync with local DB
+     *
+     * @param Blog $blog Blog to monitor
+     * @return void
+     */
+    public function monitor(Blog $blog): void
+    {
+        $apiClient = $this->apiClientFactory->make($blog->resource);
+
+        $blogDto = $apiClient->getBlog($blog->external_id);
+        $postDtos = $apiClient->getPosts($blog->external_id);
+
+        $newPosts = $this->syncService->sync($blog, $blogDto, $postDtos);
+
+        if (!empty($newPosts)) {
+            Notification::create([
+                'blog_id' => $blog->id,
+                'new_posts' => $newPosts,
+            ]);
+        }
+    }
+}
+
