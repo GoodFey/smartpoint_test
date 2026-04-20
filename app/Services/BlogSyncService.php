@@ -43,19 +43,34 @@ class BlogSyncService
 
         $apiExternalIds = [];
         $newPosts = [];
+        $upsertData = [];
 
         foreach ($postDtos as $postDto) {
             $apiExternalIds[] = $postDto->externalId;
 
-            if ($currentPosts->has($postDto->externalId)) {
-                $this->updatePostIfChanged($currentPosts[$postDto->externalId], $postDto);
-            } else {
-                $createdPost = $this->createPost($blog, $postDto);
+            if (!$currentPosts->has($postDto->externalId)) {
                 $newPosts[] = [
-                    'title' => $createdPost->title,
-                    'rating' => $createdPost->rating,
+                    'title' => $postDto->title,
+                    'rating' => $postDto->rating,
                 ];
             }
+
+            $upsertData[] = [
+                'blog_id' => $blog->id,
+                'external_id' => $postDto->externalId,
+                'title' => $postDto->title,
+                'content' => $postDto->content,
+                'rating' => $postDto->rating,
+                'reactions' => $postDto->reactions,
+            ];
+        }
+
+        if (!empty($upsertData)) {
+            Post::upsert(
+                $upsertData,
+                uniqueBy: ['blog_id', 'external_id'],
+                update: ['title', 'content', 'rating', 'reactions', 'updated_at']
+            );
         }
 
         $this->deleteRemovedPosts($blog, $apiExternalIds);
@@ -98,47 +113,6 @@ class BlogSyncService
         return false;
     }
 
-    /**
-     * Update post if data has changed
-     */
-    private function updatePostIfChanged(Post $post, PostDto $postDto): void
-    {
-        $changes = [];
-
-        if ($post->title !== $postDto->title) {
-            $changes['title'] = $postDto->title;
-        }
-
-        if ($post->content !== $postDto->content) {
-            $changes['content'] = $postDto->content;
-        }
-
-        if ($post->rating !== $postDto->rating) {
-            $changes['rating'] = $postDto->rating;
-        }
-
-        if ($post->reactions !== $postDto->reactions) {
-            $changes['reactions'] = $postDto->reactions;
-        }
-
-        if (!empty($changes)) {
-            $post->update($changes);
-        }
-    }
-
-    /**
-     * Create new post from DTO
-     */
-    private function createPost(Blog $blog, PostDto $postDto): Post
-    {
-        return $blog->posts()->create([
-            'external_id' => $postDto->externalId,
-            'title' => $postDto->title,
-            'content' => $postDto->content,
-            'rating' => $postDto->rating,
-            'reactions' => $postDto->reactions,
-        ]);
-    }
 
     /**
      * Delete posts that are no longer in API

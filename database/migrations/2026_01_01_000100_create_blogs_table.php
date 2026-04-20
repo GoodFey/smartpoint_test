@@ -25,6 +25,7 @@ return new class extends Migration
             $table->timestamps();
 
             $table->unique(['resource', 'external_id']);
+            $table->index('last_checked_at');
         });
     }
 

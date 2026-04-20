@@ -2,11 +2,10 @@
 
 namespace App\Services;
 
-use App\Integrations\BlogApi\Contracts\BlogApiClientInterface;
 use App\Integrations\BlogApi\Factories\BlogApiClientFactory;
 use App\Models\Blog;
 use App\Models\Notification;
-use InvalidArgumentException;
+use Illuminate\Support\Facades\Log;
 
 class BlogMonitorService
 {
@@ -24,18 +23,30 @@ class BlogMonitorService
      */
     public function monitor(Blog $blog): void
     {
-        $apiClient = $this->apiClientFactory->make($blog->resource);
+        try {
+            $apiClient = $this->apiClientFactory->make($blog->resource);
 
-        $blogDto = $apiClient->getBlog($blog->external_id);
-        $postDtos = $apiClient->getPosts($blog->external_id);
+            $blogDto = $apiClient->getBlog($blog->external_id);
+            $postDtos = $apiClient->getPosts($blog->external_id);
 
-        $newPosts = $this->syncService->sync($blog, $blogDto, $postDtos);
+            $newPosts = $this->syncService->sync($blog, $blogDto, $postDtos);
 
-        if (!empty($newPosts)) {
-            Notification::create([
+            if (!empty($newPosts)) {
+                Notification::create([
+                    'blog_id' => $blog->id,
+                    'new_posts' => $newPosts,
+                ]);
+            }
+        } catch (\Exception $e) {
+            Log::error('Blog monitoring failed', [
                 'blog_id' => $blog->id,
-                'new_posts' => $newPosts,
+                'resource' => $blog->resource,
+                'external_id' => $blog->external_id,
+                'error' => $e->getMessage(),
+                'exception' => get_class($e),
             ]);
+
+            throw $e;
         }
     }
 }

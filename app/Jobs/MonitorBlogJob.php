@@ -27,10 +27,21 @@ class MonitorBlogJob implements ShouldQueue
         $blog = Blog::find($this->blogId);
 
         if ($blog === null) {
+            \Log::warning('Blog not found for monitoring', ['blog_id' => $this->blogId]);
             return;
         }
 
-        $service->monitor($blog);
+        try {
+            $service->monitor($blog);
+        } catch (\Exception $e) {
+            \Log::error('Job: Blog monitoring failed', [
+                'job' => self::class,
+                'blog_id' => $this->blogId,
+                'error' => $e->getMessage(),
+            ]);
+
+            throw $e;
+        }
     }
 }
 
