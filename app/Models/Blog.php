@@ -16,10 +16,10 @@ class Blog extends Model
         'cat_name',
         'rating',
         'monitoring_interval',
-        'last_checked_at',
+        'next_check_at',
         'reactions',
         'content',
-        'is_cheking_active',
+        'is_checking_active',
     ];
 
     public function posts(): HasMany
@@ -38,12 +38,10 @@ class Blog extends Model
     public function scopeNeedsMonitoring(Builder $query): Builder
     {
         return $query
-            ->where('is_active', true)
+            ->where('is_checking_active', true)
             ->where(function ($q) {
-                $q->whereNull('last_checked_at')
-                    ->orWhereRaw(
-                        'DATE_ADD(last_checked_at, INTERVAL monitoring_interval HOUR) <= NOW()'
-                    );
+                $q->whereNull('next_check_at')
+                    ->orWhere('next_check_at', '<=', now());
             });
     }
 }

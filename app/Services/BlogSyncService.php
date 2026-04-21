@@ -23,7 +23,9 @@ class BlogSyncService
 
         $newPosts = $this->syncPosts($blog, $postDtos);
 
-        $blog->update(['last_checked_at' => now()]);
+        $blog->update([
+            'next_check_at' => now()->addHours($blog->monitoring_interval),
+        ]);
 
         return $newPosts;
     }
@@ -37,9 +39,9 @@ class BlogSyncService
      */
     public function syncPosts(Blog $blog, array $postDtos): array
     {
-        $currentPosts = $blog->posts()
-            ->get()
-            ->keyBy('external_id');
+        $existingExternalIds = $blog->posts()
+            ->pluck('external_id')
+            ->flip();
 
         $apiExternalIds = [];
         $newPosts = [];
@@ -48,7 +50,7 @@ class BlogSyncService
         foreach ($postDtos as $postDto) {
             $apiExternalIds[] = $postDto->externalId;
 
-            if (!$currentPosts->has($postDto->externalId)) {
+            if (!$existingExternalIds->has($postDto->externalId)) {
                 $newPosts[] = [
                     'title' => $postDto->title,
                     'rating' => $postDto->rating,
@@ -66,7 +68,7 @@ class BlogSyncService
         }
 
         if (!empty($upsertData)) {
-            Post::upsert(
+            Post::query()->upsert(
                 $upsertData,
                 uniqueBy: ['blog_id', 'external_id'],
                 update: ['title', 'content', 'rating', 'reactions', 'updated_at']
