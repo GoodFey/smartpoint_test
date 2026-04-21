@@ -2,12 +2,23 @@
 
 namespace App\Integrations\BlogApi\Clients;
 
+use App\Integrations\BlogApi\CircuitBreaker\CircuitBreaker;
 use App\Integrations\BlogApi\Contracts\BlogApiClientInterface;
 use App\Integrations\BlogApi\DTO\BlogDto;
 use App\Integrations\BlogApi\DTO\PostDto;
+use App\Integrations\BlogApi\RateLimiter\RateLimiter;
 
 class MockBlogApiClient implements BlogApiClientInterface
 {
+    private RateLimiter $rateLimiter;
+    private CircuitBreaker $circuitBreaker;
+
+    public function __construct()
+    {
+        $this->rateLimiter = new RateLimiter('mock');
+        $this->circuitBreaker = new CircuitBreaker('mock');
+    }
+
     /**
      * Mock data store: external_id => blog data
      */
@@ -302,34 +313,67 @@ class MockBlogApiClient implements BlogApiClientInterface
 
     public function getBlog(string $externalId): BlogDto
     {
-        $data = $this->blogs[$externalId] ?? null;
+        $this->circuitBreaker->canRequest();
+        $this->rateLimiter->allowRequest();
 
-        if ($data === null) {
-            throw new \InvalidArgumentException("Blog with external ID '{$externalId}' not found");
+        try {
+            $data = $this->blogs[$externalId] ?? null;
+
+            if ($data === null) {
+                throw new \InvalidArgumentException("Blog with external ID '{$externalId}' not found");
+            }
+
+            $result = new BlogDto(
+                title: $data['title'],
+                author: $data['author'],
+                catName: $data['cat_name'],
+                rating: $data['rating'],
+            );
+
+            $this->circuitBreaker->recordSuccess();
+
+            return $result;
+        } catch (\Exception $e) {
+            // Don't record rate limit as failure
+            if ($e->getCode() !== 429) {
+                $this->circuitBreaker->recordFailure();
+            }
+            throw $e;
         }
-
-        return new BlogDto(
-            title: $data['title'],
-            author: $data['author'],
-            catName: $data['cat_name'],
-            rating: $data['rating'],
-        );
     }
 
+    /**
+     * @throws \Exception
+     */
     public function getPosts(string $externalId): array
     {
-        $posts = $this->posts[$externalId] ?? [];
+        $this->circuitBreaker->canRequest();
+        $this->rateLimiter->allowRequest();
 
-        return array_map(
-            fn (array $post) => new PostDto(
-                externalId: $post['external_id'],
-                title: $post['title'],
-                content: $post['content'],
-                rating: $post['rating'],
-                reactions: $post['reactions'],
-            ),
-            $posts
-        );
+        try {
+            $posts = $this->posts[$externalId] ?? [];
+
+            $result = array_map(
+                fn (array $post) => new PostDto(
+                    externalId: $post['external_id'],
+                    title: $post['title'],
+                    content: $post['content'],
+                    rating: $post['rating'],
+                    reactions: $post['reactions'],
+                ),
+                $posts
+            );
+
+            $this->circuitBreaker->recordSuccess();
+
+            return $result;
+        } catch (\Exception $e) {
+            // Don't record rate limit as failure
+            if ($e->getCode() !== 429) {
+                $this->circuitBreaker->recordFailure();
+            }
+            throw $e;
+        }
     }
 }
 

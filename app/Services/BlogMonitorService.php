@@ -6,6 +6,7 @@ use App\Integrations\BlogApi\Factories\BlogApiClientFactory;
 use App\Models\Blog;
 use App\Models\Notification;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 
 class BlogMonitorService
 {
@@ -20,6 +21,7 @@ class BlogMonitorService
      *
      * @param Blog $blog Blog to monitor
      * @return void
+     * @throws Throwable On any API errors
      */
     public function monitor(Blog $blog): void
     {
@@ -37,7 +39,8 @@ class BlogMonitorService
                     'new_posts' => $newPosts,
                 ]);
             }
-        } catch (\Exception $e) {
+        } catch (Throwable $e) {
+
             Log::error('Blog monitoring failed', [
                 'blog_id' => $blog->id,
                 'resource' => $blog->resource,
