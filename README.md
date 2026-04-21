@@ -1,58 +1,120 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# SmartPoint - Blog Monitoring System
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Система мониторинга блогов с синхронизацией данных, управлением уведомлениями и обработкой сбоев.
 
-## About Laravel
+## Используемые паттерны
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+- **Service Pattern** — бизнес-логика инкапсулирована в Services (BlogMonitorService, BlogSyncService)
+- **Data Transfer Object (DTO)** — BlogDto, PostDto для передачи данных из API
+- **Factory Pattern** — BlogApiClientFactory для создания клиентов под разные источники
+- **Repository Pattern** — через Eloquent ORM и Model классы
+- **Job Queue Pattern** — MonitorBlogJob обрабатывается через очередь с retry механизмом
+- **Circuit Breaker Pattern** — защита от сбоев API в CircuitBreaker компоненте
+- **Rate Limiter Pattern** — RateLimiter для обработки 429 ошибок
+- **Dependency Injection** — через конструкторы Services и Jobs
+- **Upsert Pattern** — для синхронизации постов без дублирования (Post::upsert)
+- **Eloquent Relationships** — HasMany, BelongsTo для связи моделей
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## Архитектура проекта
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+### Модели данных (наследование)
 
-## Learning Laravel
+```
+Blog (Model)
+├── posts: HasMany -> Post
+└── notifications: HasMany -> Notification
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+Post (Model)
+└── blog: BelongsTo -> Blog
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+Notification (Model)
+└── blog: BelongsTo -> Blog
 
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
-
-## Agentic Development
-
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
-
-```bash
-composer require laravel/boost --dev
-
-php artisan boost:install
+User (Authenticatable)
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+**Ключевые поля:**
+- **Blog**: `resource`, `external_id`, `title`, `author`, `rating`, `monitoring_interval`, `next_check_at`, `is_checking_active`
+- **Post**: `blog_id`, `external_id`, `title`, `content`, `rating`, `reactions` (JSON)
+- **Notification**: `blog_id`, `new_posts` (JSON), `created_at`
 
-## Contributing
+### Слой услуг (Services)
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+#### `BlogMonitorService`
+- Основной сервис мониторинга блогов
+- **Основной метод**: `monitor(Blog $blog): void`
+  1. Создает API клиент через `BlogApiClientFactory`
+  2. Получает данные блога и посты через API
+  3. Синхронизирует данные через `BlogSyncService`
+  4. Создает уведомление при наличии новых постов
+  5. Логирует ошибки при сбое
 
-## Code of Conduct
+#### `BlogSyncService`
+- Синхронизация данных между API и базой
+- **Основной метод**: `sync(Blog $blog, BlogDto $blogDto, array $postDtos): array`
+  1. Синхронизирует метаданные блога
+  2. Синхронизирует посты (upsert по `blog_id` + `external_id`)
+  3. Удаляет посты, которые больше не существуют в API
+  4. Обновляет `next_check_at` для следующей проверки
+  5. Возвращает список новых постов для уведомления
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+### Очередные задачи (Jobs)
 
-## Security Vulnerabilities
+#### `MonitorBlogJob`
+- Реализует `ShouldQueue`
+- **Параметры retry**:
+  - `tries = 3` попытки
+  - `backoff = [3, 10, 30]` секунд между попытками
+- **Логика**:
+  1. Получает блог из БД по `blogId`
+  2. Вызывает `BlogMonitorService::monitor()`
+  3. Обрабатывает ошибки (429 Rate Limit, Circuit Breaker)
+  4. Повторно выбрасывает исключение для retry механизма
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+### Интеграция API (Integrations)
 
-## License
+Структура: `app/Integrations/BlogApi/`
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+- **Factories**: `BlogApiClientFactory` - создание клиентов для разных источников
+- **Clients**: Реализация API клиентов для конкретных ресурсов
+- **Contracts**: Интерфейсы для унификации
+- **DTO**: `BlogDto`, `PostDto` - объекты передачи данных из API
+- **RateLimiter**: Управление rate limiting (429 ошибки)
+- **CircuitBreaker**: Паттерн circuit breaker для обработки сбоев API
+
+### Поток обработки запроса (Data Flow)
+
+```
+1. Мониторинг инициируется
+   └─> MonitorBlogJob создается в очереди
+
+2. Job обработчик вызывает BlogMonitorService::monitor()
+   └─> BlogMonitorService получает API клиент
+       └─> BlogApiClientFactory::make($resource)
+       └─> Получает BlogDto и PostDto[] из API
+
+3. BlogSyncService::sync() обновляет БД
+   └─> syncPostMetadata() - обновляет метаданные блога
+   └─> syncPosts() - upsert постов, удаление удаленных
+   └─> Обновляет next_check_at
+
+4. При новых постах создается Notification
+   └─> Notification с JSON массивом новых постов сохраняется
+
+5. Обработка ошибок
+   └─> Rate Limit (429) -> логирование + retry
+   └─> Circuit Breaker OPEN -> логирование + retry
+   └─> Другие ошибки -> логирование + retry (max 3 раза)
+```
+
+### База данных (Миграции)
+
+**Таблицы:**
+- `blogs` - основные данные блогов
+- `posts` - посты блогов (FK -> blogs)
+- `notifications` - уведомления о новых постах (FK -> blogs)
+- `users` - пользователи (базовая)
+
+**Индексы:**
+- `blogs`: `(is_checking_active, next_check_at)` - для поиска блогов, требующих мониторинга
+- `blogs`: `(resource, external_id)` - уникальность источника
