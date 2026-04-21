@@ -6,105 +6,157 @@ use App\Integrations\BlogApi\DTO\BlogDto;
 use App\Integrations\BlogApi\DTO\PostDto;
 use App\Models\Blog;
 use App\Models\Post;
+use Illuminate\Support\Facades\DB;
 
 class BlogSyncService
 {
-    /**
-     * Complete synchronization of blog metadata and posts
-     *
-     * @param Blog $blog Blog to sync
-     * @param BlogDto $blogDto Blog metadata from API
-     * @param array<PostDto> $postDtos Posts from API
-     * @return array<array{title: string, rating: float}> New posts for notification
-     */
     public function sync(Blog $blog, BlogDto $blogDto, array $postDtos): array
     {
         $this->syncPostMetadata($blog, $blogDto);
 
-        $newPosts = $this->syncPosts($blog, $postDtos);
-
-        $blog->update([
-            'next_check_at' => now()->addHours($blog->monitoring_interval),
-        ]);
-
-        return $newPosts;
+        return $this->syncPosts($blog, $postDtos);
     }
 
-    /**
-     * Synchronize blog posts with data from API
-     *
-     * @param Blog $blog Blog to sync
-     * @param array<PostDto> $postDtos Posts from API
-     * @return array<array{title: string, rating: float}> New posts for notification
-     */
     public function syncPosts(Blog $blog, array $postDtos): array
     {
-        $existingExternalIds = $blog->posts()
-            ->pluck('external_id')
-            ->flip();
+        return DB::transaction(function () use ($blog, $postDtos) {
+            $apiExternalIds = array_map(fn($dto) => $dto->externalId, $postDtos);
+            $existingPosts = $this->getExistingPosts($blog, $apiExternalIds);
 
-        $apiExternalIds = [];
-        $newPosts = [];
-        $upsertData = [];
+            ['newPosts' => $newPosts, 'createData' => $createData, 'updateData' => $updateData] =
+                $this->prepareSyncData($blog, $postDtos, $existingPosts);
 
-        foreach ($postDtos as $postDto) {
-            $apiExternalIds[] = $postDto->externalId;
+            $this->executeSyncOperations($createData, $updateData);
+            $this->deleteRemovedPosts($blog, $apiExternalIds);
 
-            if (!$existingExternalIds->has($postDto->externalId)) {
-                $newPosts[] = [
-                    'title' => $postDto->title,
-                    'rating' => $postDto->rating,
-                ];
-            }
-
-            $upsertData[] = [
-                'blog_id' => $blog->id,
-                'external_id' => $postDto->externalId,
-                'title' => $postDto->title,
-                'content' => $postDto->content,
-                'rating' => $postDto->rating,
-                'reactions' => $postDto->reactions,
-            ];
-        }
-
-        if (!empty($upsertData)) {
-            Post::query()->upsert(
-                $upsertData,
-                uniqueBy: ['blog_id', 'external_id'],
-                update: ['title', 'content', 'rating', 'reactions', 'updated_at']
-            );
-        }
-
-        $this->deleteRemovedPosts($blog, $apiExternalIds);
-
-        return $newPosts;
+            return $newPosts;
+        });
     }
 
-    /**
-     * Synchronize blog metadata with data from API
-     *
-     * @param Blog $blog Blog to sync
-     * @param BlogDto $blogDto Blog data from API
-     * @return bool True if blog was updated, false otherwise
-     */
-    public function syncPostMetadata(Blog $blog, BlogDto $blogDto): bool
+    private function getExistingPosts(Blog $blog, array $apiExternalIds)
+    {
+        return $blog->posts()
+            ->whereIn('external_id', $apiExternalIds)
+            ->get()
+            ->keyBy('external_id');
+    }
+
+    private function prepareSyncData(Blog $blog, array $postDtos, $existingPosts): array
+    {
+        $newPosts = [];
+        $createData = [];
+        $updateData = [];
+
+        foreach ($postDtos as $dto) {
+            if ($existingPosts->has($dto->externalId)) {
+                $changes = $this->getPostChanges($existingPosts[$dto->externalId], $dto);
+
+                if (!empty($changes)) {
+                    $updateData[] = array_merge($changes, [
+                        'blog_id' => $blog->id,
+                        'external_id' => $dto->externalId,
+                    ]);
+                }
+            } else {
+                $newPosts[] = [
+                    'title' => $dto->title,
+                    'rating' => $dto->rating,
+                ];
+
+                $createData[] = [
+                    'blog_id' => $blog->id,
+                    'external_id' => $dto->externalId,
+                    'title' => $dto->title,
+                    'content' => $dto->content,
+                    'rating' => $dto->rating,
+                    'reactions' => $dto->reactions,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ];
+            }
+        }
+
+        return [
+            'newPosts' => $newPosts,
+            'createData' => $createData,
+            'updateData' => $updateData,
+        ];
+    }
+
+    private function executeSyncOperations(array $createData, array $updateData): void
+    {
+        if (!empty($createData)) {
+            Post::query()->insert($createData);
+        }
+
+        if (!empty($updateData)) {
+            $updateColumns = collect($updateData)
+                ->flatMap(fn($item) => array_keys($item))
+                ->unique()
+                ->diff(['blog_id', 'external_id'])
+                ->values()
+                ->toArray();
+
+            Post::query()->upsert(
+                $updateData,
+                ['blog_id', 'external_id'],
+                $updateColumns
+            );
+        }
+    }
+
+    private function deleteRemovedPosts(Blog $blog, array $apiExternalIds): void
+    {
+        $blog->posts()
+            ->whereNotIn('external_id', $apiExternalIds)
+            ->delete();
+    }
+
+    private function getPostChanges(Post $post, PostDto $dto): array
     {
         $changes = [];
 
-        if ($blog->title !== $blogDto->title) {
-            $changes['title'] = $blogDto->title;
+        if ($post->title !== $dto->title) {
+            $changes['title'] = $dto->title;
         }
 
-        if ($blog->author !== $blogDto->author) {
-            $changes['author'] = $blogDto->author;
+        if ($post->content !== $dto->content) {
+            $changes['content'] = $dto->content;
         }
 
-        if ($blog->cat_name !== $blogDto->catName) {
-            $changes['cat_name'] = $blogDto->catName;
+        if ($post->rating !== $dto->rating) {
+            $changes['rating'] = $dto->rating;
         }
 
-        if ($blog->rating !== $blogDto->rating) {
-            $changes['rating'] = $blogDto->rating;
+        if ($post->reactions !== json_encode($dto->reactions)) {
+            $changes['reactions'] = $dto->reactions;
+        }
+
+        if (!empty($changes)) {
+            $changes['updated_at'] = now();
+        }
+
+        return $changes;
+    }
+
+    public function syncPostMetadata(Blog $blog, BlogDto $dto): bool
+    {
+        $changes = [];
+
+        if ($blog->title !== $dto->title) {
+            $changes['title'] = $dto->title;
+        }
+
+        if ($blog->author !== $dto->author) {
+            $changes['author'] = $dto->author;
+        }
+
+        if ($blog->cat_name !== $dto->catName) {
+            $changes['cat_name'] = $dto->catName;
+        }
+
+        if ($blog->rating !== $dto->rating) {
+            $changes['rating'] = $dto->rating;
         }
 
         if (!empty($changes)) {
@@ -114,19 +166,4 @@ class BlogSyncService
 
         return false;
     }
-
-
-    /**
-     * Delete posts that are no longer in API
-     *
-     * @param Blog $blog
-     * @param array<string> $apiExternalIds External IDs from API
-     */
-    private function deleteRemovedPosts(Blog $blog, array $apiExternalIds): void
-    {
-        $blog->posts()
-            ->whereNotIn('external_id', $apiExternalIds)
-            ->delete();
-    }
 }
-
